@@ -42,6 +42,9 @@ const EnquirySchema = new mongoose.Schema({
 
 const MongoEnquiry = mongoose.model('Enquiry', EnquirySchema);
 
+// Local in-memory backup array in case disk writing is blocked
+let inMemoryEnquiries = [];
+
 // 2. Hybrid Enquiry handler
 export const saveEnquiry = async (data) => {
   const isMongo = getDbStatus();
@@ -51,30 +54,40 @@ export const saveEnquiry = async (data) => {
     const newEnquiry = new MongoEnquiry(data);
     return await newEnquiry.save();
   } else {
-    // Save to local JSON file fallback
-    ensureFallbackDir();
-    
-    let enquiries = [];
-    if (fs.existsSync(FALLBACK_FILE_PATH)) {
-      try {
-        const fileContent = fs.readFileSync(FALLBACK_FILE_PATH, 'utf-8');
-        enquiries = JSON.parse(fileContent || '[]');
-      } catch (err) {
-        console.error('[Fallback DB] Error reading json file, resetting database:', err.message);
-        enquiries = [];
-      }
-    }
-
     const newRecord = {
       _id: new mongoose.Types.ObjectId().toString(), // Generate a mock ObjectId for consistency
       ...data,
       createdAt: new Date().toISOString()
     };
 
-    enquiries.push(newRecord);
-    
-    fs.writeFileSync(FALLBACK_FILE_PATH, JSON.stringify(enquiries, null, 2), 'utf-8');
-    console.log(`[Fallback DB] Saved enquiry for ${data.name} to: ${FALLBACK_FILE_PATH}`);
+    try {
+      // Save to local JSON file fallback
+      ensureFallbackDir();
+      
+      let enquiries = [];
+      if (fs.existsSync(FALLBACK_FILE_PATH)) {
+        try {
+          const fileContent = fs.readFileSync(FALLBACK_FILE_PATH, 'utf-8');
+          enquiries = JSON.parse(fileContent || '[]');
+        } catch (err) {
+          console.error('[Fallback DB] Error reading json file, resetting database:', err.message);
+          enquiries = [];
+        }
+      }
+
+      enquiries.push(newRecord);
+      
+      fs.writeFileSync(FALLBACK_FILE_PATH, JSON.stringify(enquiries, null, 2), 'utf-8');
+      console.log(`[Fallback DB] Saved enquiry for ${data.name} to disk.`);
+    } catch (fsError) {
+      console.warn('[Fallback DB] Disk write failed (possibly read-only environment). Storing in memory fallback:');
+      console.warn(fsError.message);
+      
+      // Store in memory so the API request still succeeds
+      inMemoryEnquiries.push(newRecord);
+      console.log(`[Fallback DB] Stored enquiry for ${data.name} in memory. Total in memory: ${inMemoryEnquiries.length}`);
+    }
+
     return newRecord;
   }
 };
